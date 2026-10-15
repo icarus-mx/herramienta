@@ -1,4 +1,6 @@
 # Los datos de la página: los crea el servidor al arrancar, no van al repositorio.
+.preguntas.db
+.preguntas.db-*
 .preguntas.json
 .preguntas.json.*
 

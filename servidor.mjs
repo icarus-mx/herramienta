@@ -1,6 +1,7 @@
 // Tu propio servidor: sirve los archivos de este directorio (como servir.mjs de deploy) y
 // además guarda las preguntas de quien visita, para que todos vean la misma lista.
-// Las preguntas viven en .preguntas.json (con punto: nunca sale a internet como archivo).
+// Las preguntas viven en la base de datos .preguntas.db (SQLite, ya viene con Node 22;
+// con punto: nunca sale a internet como archivo).
 //   node servidor.mjs        (PUERTO cambia el puerto, para las pruebas)
 //
 //   GET  /api/preguntas              la lista, primero las más votadas
@@ -8,13 +9,15 @@
 //   POST /api/preguntas/<id>/votar   suma un voto
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { readFile, rename, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { existsSync, readFileSync, renameSync } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 const raiz = import.meta.dirname;
 const puerto = Number(process.env.PUERTO ?? 3000);
-const DATOS = join(raiz, '.preguntas.json');
+const BASE = join(raiz, '.preguntas.db');
+const VIEJO = join(raiz, '.preguntas.json');
 const MAX_TEXTO = 500;
 const MAX_CUERPO = 2048;
 
@@ -70,26 +73,27 @@ function archivoDe(camino) {
 	return archivo;
 }
 
-// Las preguntas se leen una vez al arrancar y se guardan en el disco en cada cambio.
-let preguntas = [];
-try {
-	preguntas = JSON.parse(readFileSync(DATOS, 'utf8'));
-} catch (e) {
-	if (e.code !== 'ENOENT') {
-		console.error(`No pude leer ${DATOS}: ${e.message}`);
-		process.exit(1);
-	}
-}
+// La base de datos: un solo archivo SQLite; la tabla se crea sola la primera vez.
+const db = new DatabaseSync(BASE);
+db.exec(`CREATE TABLE IF NOT EXISTS preguntas (
+	id    TEXT PRIMARY KEY,
+	texto TEXT NOT NULL,
+	votos INTEGER NOT NULL DEFAULT 0,
+	fecha TEXT NOT NULL
+)`);
 
-// Una escritura a la vez: primero a un archivo aparte y luego se renombra, así nunca queda a medias.
-let guardando = Promise.resolve();
-function guardar() {
-	guardando = guardando.then(async () => {
-		const temporal = `${DATOS}.tmp`;
-		await writeFile(temporal, JSON.stringify(preguntas, null, '\t'));
-		await rename(temporal, DATOS);
-	});
-	return guardando;
+const insertar = db.prepare('INSERT INTO preguntas (id, texto, votos, fecha) VALUES (?, ?, ?, ?)');
+const todas = db.prepare('SELECT * FROM preguntas ORDER BY votos DESC, fecha ASC');
+const sumarVoto = db.prepare('UPDATE preguntas SET votos = votos + 1 WHERE id = ? RETURNING *');
+
+// Si quedó un .preguntas.json de antes, se pasa a la base una sola vez y se aparta.
+if (existsSync(VIEJO)) {
+	const viejas = JSON.parse(readFileSync(VIEJO, 'utf8'));
+	db.exec('BEGIN');
+	for (const p of viejas) insertar.run(p.id, p.texto, p.votos, p.fecha);
+	db.exec('COMMIT');
+	renameSync(VIEJO, `${VIEJO}.migrado`);
+	console.log(`Pasé ${viejas.length} preguntas de ${VIEJO} a la base de datos.`);
 }
 
 class ErrorHttp extends Error {
@@ -126,13 +130,10 @@ function leerJson(req) {
 	});
 }
 
-const ordenadas = () =>
-	[...preguntas].sort((a, b) => b.votos - a.votos || a.fecha.localeCompare(b.fecha));
-
 /** Responde la API. Devuelve [código, datos]; los errores salen como ErrorHttp. */
 async function api(req, camino) {
 	if (camino === '/api/preguntas') {
-		if (req.method === 'GET') return [200, ordenadas()];
+		if (req.method === 'GET') return [200, todas.all()];
 		if (req.method === 'POST') {
 			const { texto } = (await leerJson(req)) ?? {};
 			const limpio = typeof texto === 'string' ? texto.trim() : '';
@@ -140,8 +141,7 @@ async function api(req, camino) {
 			if (limpio.length > MAX_TEXTO)
 				throw new ErrorHttp(400, `La pregunta pasa de ${MAX_TEXTO} caracteres.`);
 			const pregunta = { id: randomUUID(), texto: limpio, votos: 0, fecha: new Date().toISOString() };
-			preguntas.push(pregunta);
-			await guardar();
+			insertar.run(pregunta.id, pregunta.texto, pregunta.votos, pregunta.fecha);
 			return [201, pregunta];
 		}
 		throw new ErrorHttp(405, 'Método no permitido.');
@@ -149,10 +149,8 @@ async function api(req, camino) {
 	const voto = camino.match(/^\/api\/preguntas\/([^/]+)\/votar$/);
 	if (voto) {
 		if (req.method !== 'POST') throw new ErrorHttp(405, 'Método no permitido.');
-		const pregunta = preguntas.find((p) => p.id === voto[1]);
+		const pregunta = sumarVoto.get(voto[1]);
 		if (!pregunta) throw new ErrorHttp(404, 'Esa pregunta no existe.');
-		pregunta.votos += 1;
-		await guardar();
 		return [200, pregunta];
 	}
 	throw new ErrorHttp(404, 'No existe.');
