@@ -1,0 +1,6 @@
+# Los datos de la página: los crea el servidor al arrancar, no van al repositorio.
+.preguntas.json
+.preguntas.json.*
+
+# Ajustes personales de Claude Code.
+.claude/settings.local.json

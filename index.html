@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mi página</title>
+  <style>
+    body { font-family: Georgia, serif; max-width: 36rem; margin: 4rem auto; padding: 0 1rem; }
+    body { background: #0b1420; color: #e8e2d4; line-height: 1.6; }
+    h1, h2 { color: #e6c25c; }
+    textarea { width: 100%; box-sizing: border-box; font: inherit; padding: .5rem; background: #13202f; color: inherit; border: 1px solid #2c3e52; border-radius: 4px; }
+    button { font: inherit; cursor: pointer; background: #e6c25c; color: #0b1420; border: 0; border-radius: 4px; padding: .3rem .8rem; }
+    button:disabled { opacity: .5; cursor: default; }
+    .fila { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-top: .3rem; }
+    .gris { color: #96a0aa; font-size: .9rem; }
+    .error { color: #e88b7a; }
+    ul { list-style: none; padding: 0; }
+    li { display: flex; gap: .8rem; align-items: flex-start; padding: .6rem 0; border-bottom: 1px solid #1d2c3d; }
+    li p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    li button { min-width: 3.5rem; background: #13202f; color: #e6c25c; border: 1px solid #2c3e52; }
+  </style>
+</head>
+<body>
+  <h1>Hola.</h1>
+  <p>Esta página vive en mi entorno de Creta Cloud.</p>
+  <p>La publiqué con deploy, desde mi terminal.</p>
+
+  <h2>Preguntas</h2>
+  <p>Escribe tu pregunta; todos los que visiten la página la verán. Vota las que te interesan.</p>
+  <form id="formulario">
+    <textarea id="texto" rows="3" maxlength="500" required></textarea>
+    <div class="fila">
+      <span id="cuenta" class="gris">0 / 500</span>
+      <button id="enviar">Enviar pregunta</button>
+    </div>
+    <p id="aviso" class="gris"></p>
+  </form>
+  <ul id="lista"></ul>
+  <p id="estado" class="gris">Cargando…</p>
+
+  <script>
+    const formulario = document.getElementById('formulario');
+    const texto = document.getElementById('texto');
+    const cuenta = document.getElementById('cuenta');
+    const enviar = document.getElementById('enviar');
+    const aviso = document.getElementById('aviso');
+    const lista = document.getElementById('lista');
+    const estado = document.getElementById('estado');
+
+    // Cada navegador recuerda qué preguntas ya votó, para no votar dos veces.
+    const votadas = new Set(JSON.parse(localStorage.getItem('votadas') || '[]'));
+
+    // Pide algo a la API y devuelve el JSON; si falla, lanza un error con el mensaje del servidor.
+    async function pedir(camino, opciones) {
+      const res = await fetch(camino, opciones);
+      const tipo = res.headers.get('content-type') || '';
+      const datos = tipo.includes('application/json') ? await res.json() : null;
+      if (!res.ok) throw new Error(datos?.error || `El servidor respondió ${res.status}.`);
+      if (!datos) throw new Error('El servidor no respondió con datos.');
+      return datos;
+    }
+
+    function mostrar(preguntas) {
+      lista.replaceChildren(...preguntas.map((p) => {
+        const li = document.createElement('li');
+        const boton = document.createElement('button');
+        boton.textContent = `▲ ${p.votos}`;
+        boton.disabled = votadas.has(p.id);
+        boton.onclick = () => votar(p.id, boton);
+        const parrafo = document.createElement('p');
+        parrafo.textContent = p.texto;
+        li.append(boton, parrafo);
+        return li;
+      }));
+      estado.textContent = preguntas.length ? '' : 'Todavía no hay preguntas. Sé el primero.';
+    }
+
+    async function cargar() {
+      try {
+        mostrar(await pedir('/api/preguntas'));
+      } catch (e) {
+        estado.textContent = `No se pudo cargar: ${e.message}`;
+      }
+    }
+
+    async function votar(id, boton) {
+      boton.disabled = true;
+      try {
+        await pedir(`/api/preguntas/${encodeURIComponent(id)}/votar`, { method: 'POST' });
+        votadas.add(id);
+        localStorage.setItem('votadas', JSON.stringify([...votadas]));
+        await cargar();
+      } catch (e) {
+        boton.disabled = false;
+        estado.textContent = `No se pudo votar: ${e.message}`;
+      }
+    }
+
+    texto.addEventListener('input', () => {
+      cuenta.textContent = `${texto.value.length} / 500`;
+    });
+
+    formulario.addEventListener('submit', async (evento) => {
+      evento.preventDefault();
+      enviar.disabled = true;
+      aviso.className = 'gris';
+      aviso.textContent = 'Enviando…';
+      try {
+        await pedir('/api/preguntas', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ texto: texto.value })
+        });
+        texto.value = '';
+        cuenta.textContent = '0 / 500';
+        aviso.textContent = '¡Listo! Tu pregunta ya está en la lista.';
+        await cargar();
+      } catch (e) {
+        aviso.className = 'error';
+        aviso.textContent = `No se pudo enviar: ${e.message}`;
+      } finally {
+        enviar.disabled = false;
+      }
+    });
+
+    cargar();
+    setInterval(cargar, 5000);
+  </script>
+</body>
+</html>
